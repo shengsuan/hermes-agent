@@ -218,6 +218,8 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
+    elif provider == "shengsuanyun":
+        api_mode = "anthropic_messages"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
@@ -1299,6 +1301,8 @@ def resolve_runtime_provider(
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider == "shengsuanyun":
+            api_mode = "anthropic_messages"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

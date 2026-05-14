@@ -263,6 +263,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
     ),
+    "shengsuanyun": ProviderConfig(
+        id="shengsuanyun",
+        name="胜算云",
+        auth_type="api_key",
+        inference_base_url="https://router.shengsuanyun.com/api",
+        api_key_env_vars=("SHENGSUANYUN_API_KEY",),
+        base_url_env_var="SHENGSUANYUN_BASE_URL",
+    ),
     "minimax-oauth": ProviderConfig(
         id="minimax-oauth",
         name="MiniMax (OAuth \u00b7 minimax.io)",

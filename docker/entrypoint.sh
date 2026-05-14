@@ -68,14 +68,22 @@ mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,wo
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then
+    echo "生成默认环境变量文件 .env"
     cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
 fi
 
 # config.yaml
 if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-    cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+    echo "生成默认配置文件 config.yaml"
+    # cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+    envsubst < "$INSTALL_DIR/cli-config.yaml.example" > "$HERMES_HOME/config.yaml"
 fi
-
+# auth.json
+if [ ! -f "$HERMES_HOME/auth.json" ]; then
+    echo "生成默认认证文件 auth.json"
+    # cp "$INSTALL_DIR/cli-auth.json.example" "$HERMES_HOME/auth.json"
+    envsubst < "$INSTALL_DIR/cli-auth.json.example" > "$HERMES_HOME/auth.json"
+fi
 # SOUL.md
 if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
     cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
