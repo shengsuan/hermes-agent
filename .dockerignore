@@ -18,8 +18,6 @@ ui-tui/packages/hermes-ink/dist/
 # CI/CD
 .github
 
-# Environment files
-.env
 
 *.md
 

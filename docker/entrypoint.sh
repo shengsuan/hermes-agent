@@ -68,8 +68,26 @@ mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,wo
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then
-    echo "生成默认环境变量文件 .env"
-    cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        echo "复制 .env 文件到数据卷"
+        cp "$INSTALL_DIR/.env" "$HERMES_HOME/.env"
+    else
+        echo "生成默认环境变量文件 .env"
+        cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
+    fi
+fi
+
+# Source .env so envsubst can substitute variables from it.
+# Parse line-by-line to safely handle unquoted values that contain spaces.
+if [ -f "$HERMES_HOME/.env" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and blank lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        # Must be KEY=VALUE with a valid identifier as key
+        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        export "${BASH_REMATCH[1]}"="${BASH_REMATCH[2]}"
+    done < "$HERMES_HOME/.env"
 fi
 
 # config.yaml
