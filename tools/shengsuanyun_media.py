@@ -5,8 +5,8 @@ import time
 import logging
 import asyncio
 import os
-from typing import Any, Dict, Optional, List
 import requests
+from typing import Any, Dict, Optional, List
 
 from tools.registry import registry, tool_error
 
@@ -211,6 +211,149 @@ def check_api_requirements() -> bool:
 def _normalize_tool_name(text: str) -> str:
     return text.replace("/", "_").replace("-", "_").replace(".", "_").lower()
 
+
+def _resolve_to_data_uri(path_or_url: str, default_mime: str = "image/jpeg") -> str:
+    """Convert a local file path to a base64 data URI; HTTP/data/asset URLs pass through."""
+    if path_or_url.startswith(("http://", "https://", "data:", "asset://")):
+        return path_or_url
+    from pathlib import Path
+    import base64
+    path = Path(path_or_url).expanduser()
+    if not path.is_file():
+        return path_or_url
+    suffix = path.suffix.lower()
+    mime_map = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp",
+        ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+    }
+    mime = mime_map.get(suffix, default_mime)
+    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+def _detect_schema_type(schema_obj: Dict[str, Any]) -> str:
+    """Return the API input-format type of a model schema.
+
+    "content_array" – uses a ``content[]`` field with typed items (Sora-style).
+    "media_array"   – uses a ``media[]`` field with ``{type, url}`` objects.
+    "direct"        – flat key/value params.
+    """
+    props = schema_obj.get("properties", {})
+    content = props.get("content", {})
+    if content.get("type") == "array":
+        items = content.get("items", {})
+        if items.get("type") == "object" and "type" in items.get("properties", {}):
+            return "content_array"
+    media = props.get("media", {})
+    if media.get("type") == "array":
+        if media.get("items", {}).get("type") == "object":
+            return "media_array"
+    # recurse into anyOf/oneOf variants
+    for key in ("anyOf", "oneOf"):
+        for sub in schema_obj.get(key, []):
+            t = _detect_schema_type(sub)
+            if t != "direct":
+                return t
+    return "direct"
+
+
+def _content_array_capabilities(schema_obj: Dict[str, Any]) -> Dict[str, bool]:
+    """Return which media-item types a content_array schema supports."""
+    props = schema_obj.get("properties", {})
+    type_enum = (
+        props.get("content", {})
+        .get("items", {})
+        .get("properties", {})
+        .get("type", {})
+        .get("enum", [])
+    )
+    return {
+        "image": "image_url" in type_enum,
+        "video": "video_url" in type_enum,
+        "audio": "audio_url" in type_enum,
+    }
+
+def _anyof_variant_summary(schema_obj: Dict[str, Any]) -> str:
+    """Build a concise English summary of anyOf/oneOf variants for tool descriptions."""
+    for key in ("anyOf", "oneOf"):
+        variants = schema_obj.get(key, [])
+        if not variants:
+            continue
+        parts = []
+        for v in variants:
+            title = v.get("title", "")
+            req = [r for r in v.get("required", []) if r != "prompt"]
+            if req:
+                parts.append(f"{title}(+{','.join(req)})" if title else f"+{','.join(req)}")
+            else:
+                parts.append(title or "prompt-only")
+        return "Modes: " + " | ".join(parts)
+    return ""
+
+
+def _build_content_array_payload(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert flat tool args to the content-array payload expected by the API."""
+    payload = dict(args)
+    prompt    = payload.pop("prompt",    None)
+    image_url = payload.pop("image_url", None)
+    video_url = payload.pop("video_url", None)
+    audio_url = payload.pop("audio_url", None)
+
+    content: list = []
+    if prompt:
+        content.append({"type": "text", "text": prompt})
+    if image_url:
+        content.append({
+            "type": "image_url",
+            "role": "first_frame",
+            "image_url": {"url": _resolve_to_data_uri(image_url)},
+        })
+    if video_url:
+        content.append({
+            "type": "video_url",
+            "role": "reference_video",
+            "video_url": {"url": video_url},
+        })
+    if audio_url:
+        content.append({
+            "type": "audio_url",
+            "role": "reference_audio",
+            "audio_url": {"url": audio_url},
+        })
+    payload["content"] = content
+    return payload
+
+
+def _build_media_array_payload(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert flat tool args to the media-array payload expected by the API."""
+    payload = dict(args)
+    image_url = payload.pop("image_url", None)
+    if image_url:
+        payload["media"] = [{"type": "first_frame", "url": _resolve_to_data_uri(image_url)}]
+    return payload
+
+
+def _create_handler(mid: str, schema_type: str, capabilities: Dict[str, bool]):
+    """Return an async tool handler bound to *mid* and the given schema metadata.
+
+    All parameters are passed by value so each handler has its own independent
+    copy — this avoids the closure-over-loop-variable bug.
+    """
+    async def handler(args, **kw):
+        if schema_type == "content_array":
+            processed_args = _build_content_array_payload(dict(args))
+        elif schema_type == "media_array":
+            processed_args = _build_media_array_payload(dict(args))
+        else:
+            processed_args = dict(args)
+            for key, mime in [("image", "image/jpeg"), ("video", "video/mp4"), ("audio", "audio/mpeg")]:
+                if key in processed_args and isinstance(processed_args[key], str):
+                    processed_args[key] = _resolve_to_data_uri(processed_args[key], mime)
+        return await shengsuanyun_generation_tool(mid, **processed_args)
+    return handler
+
 def _extract_simple_properties(schema_obj: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
     properties = {}
     required = []
@@ -237,6 +380,9 @@ def _extract_simple_properties(schema_obj: Dict[str, Any]) -> tuple[Dict[str, An
             "description": prop_def.get("title", prop_def.get("description", ""))
         }
 
+        if prop_type == "array" and "items" in prop_def:
+            prop_schema["items"] = prop_def["items"]
+
         if "enum" in prop_def:
             prop_schema["enum"] = prop_def["enum"]
 
@@ -262,31 +408,63 @@ def _extract_simple_properties(schema_obj: Dict[str, Any]) -> tuple[Dict[str, An
 
     return properties, required
 
-def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str]]:
+def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str], Dict[str, Any]]:
+    """Parse a model's input_schema string.
+
+    Returns ``(properties, required, schema_meta)`` where *schema_meta* is::
+
+        {
+            "type":         "content_array" | "media_array" | "direct",
+            "capabilities": {"image": bool, "video": bool, "audio": bool},
+            "variant_summary": str,   # human-readable anyOf summary
+        }
+    """
+    schema_meta: Dict[str, Any] = {
+        "type": "direct", "capabilities": {}, "variant_summary": "",
+    }
     try:
         if not input_schema_str or not isinstance(input_schema_str, str):
-            return {}, []
+            return {}, [], schema_meta
 
         schema_obj = json.loads(input_schema_str)
+        schema_type = _detect_schema_type(schema_obj)
+        schema_meta["type"] = schema_type
+        schema_meta["variant_summary"] = _anyof_variant_summary(schema_obj)
 
-        properties = {}
-        required = []
+        if schema_type == "content_array":
+            return _parse_content_array_schema(schema_obj, schema_meta)
+        if schema_type == "media_array":
+            return _parse_media_array_schema(schema_obj, schema_meta)
+
+        # ---------- direct schema ----------
+        properties: Dict[str, Any] = {}
+        required: List[str] = []
 
         if "properties" in schema_obj:
             properties, required = _extract_simple_properties(schema_obj)
 
         elif "anyOf" in schema_obj or "oneOf" in schema_obj or "allOf" in schema_obj:
+            is_all_of = (
+                "allOf" in schema_obj
+                and "anyOf" not in schema_obj
+                and "oneOf" not in schema_obj
+            )
             schemas_list = (
                 schema_obj.get("anyOf", [])
                 or schema_obj.get("oneOf", [])
                 or schema_obj.get("allOf", [])
             )
+            all_sub_required: List[set] = []
             for sub_schema in schemas_list:
                 if "properties" in sub_schema:
                     sub_props, sub_req = _extract_simple_properties(sub_schema)
                     properties.update(sub_props)
-                    required.extend(sub_req)
-            required = list(set(required))
+                    all_sub_required.append(set(sub_req))
+            if all_sub_required:
+                if is_all_of:
+                    required = list(set.union(*all_sub_required))
+                else:
+                    required = list(set.intersection(*all_sub_required))
 
         if "content" in schema_obj.get("properties", {}):
             properties["prompt"] = {
@@ -297,14 +475,86 @@ def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str
                 if "prompt" not in required:
                     required.append("prompt")
 
-        return properties, required
+        return properties, required, schema_meta
 
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse input_schema: {e}")
-        return {}, []
+        return {}, [], schema_meta
     except Exception as e:
         logger.warning(f"Error extracting schema properties: {e}")
-        return {}, []
+        return {}, [], schema_meta
+
+
+def _parse_content_array_schema(
+    schema_obj: Dict[str, Any], schema_meta: Dict[str, Any]
+) -> tuple[Dict[str, Any], List[str], Dict[str, Any]]:
+    """Build a flat tool schema for content-array (Sora-style) models.
+
+    Exposes ``prompt`` plus optional ``image_url`` / ``video_url`` / ``audio_url``
+    parameters instead of the raw ``content[]`` array.
+    """
+    caps = _content_array_capabilities(schema_obj)
+    schema_meta["capabilities"] = caps
+
+    properties: Dict[str, Any] = {
+        "prompt": {
+            "type": "string",
+            "description": "Text description or instruction for generation",
+        }
+    }
+    required = ["prompt"]
+
+    if caps.get("image"):
+        properties["image_url"] = {
+            "type": "string",
+            "description": (
+                "Image URL or local file path to use as first-frame reference "
+                "(JPEG/PNG/WEBP, ≥ 300 px, ≤ 10 MB)"
+            ),
+        }
+    if caps.get("video"):
+        properties["video_url"] = {
+            "type": "string",
+            "description": "Video URL or local file path to use as reference video",
+        }
+    if caps.get("audio"):
+        properties["audio_url"] = {
+            "type": "string",
+            "description": "Audio URL or local file path to use as reference audio",
+        }
+
+    # Append other simple scalar params (resolution, ratio, duration, …)
+    other_props, _ = _extract_simple_properties(schema_obj)
+    for k, v in other_props.items():
+        if k not in properties:
+            properties[k] = v
+
+    return properties, required, schema_meta
+
+
+def _parse_media_array_schema(
+    schema_obj: Dict[str, Any], schema_meta: Dict[str, Any]
+) -> tuple[Dict[str, Any], List[str], Dict[str, Any]]:
+    """Build a flat tool schema for media-array (first-frame image-to-video) models."""
+    schema_meta["capabilities"] = {"image": True}
+
+    properties: Dict[str, Any] = {
+        "image_url": {
+            "type": "string",
+            "description": (
+                "First-frame image URL or local file path "
+                "(JPEG/PNG/WEBP; ≥ 300 px wide & tall; ratio 1:2.5–2.5:1; ≤ 10 MB)"
+            ),
+        }
+    }
+    required = ["image_url"]
+
+    other_props, _ = _extract_simple_properties(schema_obj)
+    for k, v in other_props.items():
+        if k not in properties:
+            properties[k] = v
+
+    return properties, required, schema_meta
 
 def register_shengsuanyun_tools():
     models = get_models()
@@ -332,7 +582,7 @@ def register_shengsuanyun_tools():
                 elif "文本" in first_class:
                     modality = "text"
 
-            properties, required = _parse_input_schema(input_schema_str)
+            properties, required, schema_meta = _parse_input_schema(input_schema_str)
 
             if not properties:
                 properties = {
@@ -345,11 +595,14 @@ def register_shengsuanyun_tools():
 
             tool_name = f"shengsuanyun_{_normalize_tool_name(api_name)}"
 
-            full_description = f"{model_name}"
+            full_description = model_name
             if description:
                 full_description += f": {description}"
             if class_names:
                 full_description += f" ({', '.join(class_names)})"
+            variant_summary = schema_meta.get("variant_summary", "")
+            if variant_summary:
+                full_description += f". {variant_summary}"
 
             tool_schema = {
                 "name": tool_name,
@@ -357,82 +610,92 @@ def register_shengsuanyun_tools():
                 "parameters": {
                     "type": "object",
                     "properties": properties,
-                    "required": required
-                }
+                    "required": required,
+                },
             }
 
-            def create_handler(mid):
-                async def handler(args, **kw):
-                    processed_args = dict(args)
-
-                    if "prompt" in processed_args and "prompt" not in properties:
-                        prompt_text = processed_args.pop("prompt")
-                        processed_args["content"] = [
-                            {"type": "text", "text": prompt_text}
-                        ]
-
-                    for key in ["image", "video", "audio"]:
-                        if key in processed_args and isinstance(processed_args[key], str):
-                            url = processed_args[key]
-                            if not url.startswith(("http://", "https://", "data:", "asset://")):
-                                from pathlib import Path
-                                import base64
-
-                                path = Path(url).expanduser()
-                                if path.is_file():
-                                    mime_type = "image/jpeg" if key == "image" else "video/mp4" if key == "video" else "audio/mpeg"
-                                    data = path.read_bytes()
-                                    b64 = base64.b64encode(data).decode("ascii")
-                                    processed_args[key] = f"data:{mime_type};base64,{b64}"
-
-                    return await shengsuanyun_generation_tool(mid, **processed_args)
-                return handler
-
-            emoji_map = {
-                "image": "🎨",
-                "video": "🎬",
-                "audio": "🔊",
-                "text": "📝",
-            }
+            emoji_map = {"image": "🎨", "video": "🎬", "audio": "🔊", "text": "📝"}
             emoji = emoji_map.get(modality.lower(), "✨")
 
             registry.register(
                 name=tool_name,
                 toolset="shengsuanyun",
                 schema=tool_schema,
-                handler=create_handler(api_name),
+                handler=_create_handler(
+                    api_name,
+                    schema_meta["type"],
+                    schema_meta.get("capabilities", {}),
+                ),
                 check_fn=check_api_requirements,
                 is_async=True,
-                emoji=emoji
+                emoji=emoji,
             )
 
-            logger.debug(f"Registered tool: {tool_name} ({modality})")
+            logger.debug(f"Registered tool: {tool_name} ({modality}, {schema_meta['type']})")
 
         except Exception as e:
             logger.warning(f"Failed to register model {model_info.get('id')}: {e}")
             continue
+
+def _list_models_handler(args, **kw):
+    models = get_models()
+    summary = [
+        {
+            "api_name": m.get("api_name", ""),
+            "model_name": m.get("model_name", ""),
+            "desc": m.get("desc", m.get("description", ""))[:120],
+            "class_names": m.get("class_names", []),
+        }
+        for m in models
+    ]
+    return json.dumps({"count": len(summary), "models": summary}, ensure_ascii=False)
+
+
+# This top-level registry.register() call is required so that
+# discover_builtin_tools() AST scan detects this file as a tool module.
+registry.register(
+    name="shengsuanyun_list_models",
+    toolset="shengsuanyun",
+    schema={
+        "name": "shengsuanyun_list_models",
+        "description": (
+            "List all available Shengsuanyun AI generation models "
+            "(image / video / audio / text). Returns api_name, model_name, "
+            "description and category for each model."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    handler=_list_models_handler,
+    check_fn=check_api_requirements,
+    is_async=False,
+    emoji="📋",
+)
 
 try:
     register_shengsuanyun_tools()
 except Exception as e:
     logger.warning(f"Failed to register shengsuanyun tools: {e}")
 
-if __name__ == "__main__":
-    models = get_models()
-    print(f"Found {len(models)} models")
+# if __name__ == "__main__":
+#     models = get_models()
+#     print(f"Found {len(models)} models")
 
-    for i, model in enumerate(models[:10]):
-        print(f"\n{'='*60}")
-        print(f"Model {i+1}: {model.get('model_name', 'N/A')}")
-        print(f"API: {model.get('api_name', 'N/A')}")
-        print(f"Classes: {model.get('class_names', [])}")
+#     for i, model in enumerate(models[:10]):
+#         print(f"\n{'='*60}")
+#         print(f"Model {i+1}: {model.get('model_name', 'N/A')}")
+#         print(f"API: {model.get('api_name', 'N/A')}")
+#         print(f"Classes: {model.get('class_names', [])}")
 
-        input_schema_str = model.get("input_schema", "")
-        if input_schema_str:
-            try:
-                schema_obj = json.loads(input_schema_str)
-                props, req = _extract_simple_properties(schema_obj)
-                print(f"Properties: {list(props.keys())}")
-                print(f"Required: {req}")
-            except Exception as e:
-                print(f"Schema parse error: {e}")
+#         input_schema_str = model.get("input_schema", "")
+#         if input_schema_str:
+#             try:
+#                 schema_obj = json.loads(input_schema_str)
+#                 # with open(f"schema_{model.get('id', 'unknown')}.json", "w", encoding="utf-8") as f:
+#                 #     json.dump(schema_obj, f, ensure_ascii=False, indent=2)  
+#                 props, req = _extract_simple_properties(schema_obj)
+#                 print(f"Properties: {list(props.keys())}")
+#                 print(f"Required: {req}")
+#             except Exception as e:
+#                 print(f"Schema parse error: {e}")
+#         else:
+#             print("No input schema")

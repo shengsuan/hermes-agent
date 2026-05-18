@@ -282,6 +282,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    "shengsuanyun": {
+        "description": (
+            "ShengSuanYun (声算云) AI media generation — image, video, audio and text "
+            "models via the router API. Tools are registered dynamically at startup "
+            "based on the model catalog. Requires SHENGSUANYUN_API_KEY."
+        ),
+        # Tool list is populated at runtime by register_shengsuanyun_tools()
+        # via registry.get_tool_names_for_toolset("shengsuanyun").
+        # The static list here is intentionally empty.
+        "tools": [],
+        "includes": [],
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
