@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
+import os
 import json
 import time
 import logging
 import asyncio
-import os
 import requests
 from typing import Any, Dict, Optional, List
 
@@ -165,33 +165,27 @@ def get_generation_result(task_id: str) -> Dict[str, Any]:
 
 async def wait_for_completion(task_id: str, timeout: int = 300, poll_interval: int = 3) -> Dict[str, Any]:
     start_time = time.time()
-
     while time.time() - start_time < timeout:
         result = get_generation_result(task_id)
         status = result.get("status")
-
-        if status == "SUCCEEDED":
+        if status == "SUCCEEDED" or status == "COMPLETED":
             return result
         elif status == "FAILED":
             fail_reason = result.get("fail_reason", "Unknown error")
             raise Exception(f"Task failed: {fail_reason}")
-        elif status in ["IN_PROGRESS", "PENDING"]:
+        elif status in ["IN_PROGRESS", "PENDING", "SUBMITTING"]:
             await asyncio.sleep(poll_interval)
         else:
             raise Exception(f"Unknown status: {status}")
-
     raise TimeoutError(f"Task {task_id} timed out after {timeout} seconds")
 
 async def shengsuanyun_generation_tool(model_id: str, **params) -> str:
     try:
         logger.info(f"Creating generation task for model {model_id}")
         task_id = create_generation_task(model_id, params)
-
         logger.info(f"Task created: {task_id}, waiting for completion...")
         result = await wait_for_completion(task_id)
-
         output_data = result.get("data", {})
-
         return json.dumps({
             "success": True,
             "task_id": task_id,
@@ -211,6 +205,115 @@ def check_api_requirements() -> bool:
 def _normalize_tool_name(text: str) -> str:
     return text.replace("/", "_").replace("-", "_").replace(".", "_").lower()
 
+def _extract_url_from_output(data: Any) -> Optional[str]:
+    """Best-effort extraction of a media URL from the API output_data dict.
+    Tries common key patterns used by media generation APIs before giving up.
+    """
+    if isinstance(data, str):
+        return data if data.startswith("http") else None
+    if not isinstance(data, dict):
+        return None
+    for key in ("url", "video_url", "image_url", "audio_url", "file_url"):
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            return val
+    for key in ("images", "videos", "audios", "outputs", "results"):
+        val = data.get(key)
+        if isinstance(val, list) and val:
+            item = val[0]
+            if isinstance(item, str) and item:
+                return item
+            if isinstance(item, dict):
+                for subkey in ("url", "video_url", "image_url", "audio_url"):
+                    subval = item.get(subkey)
+                    if isinstance(subval, str) and subval:
+                        return subval
+    return None
+
+
+def _save_media_to_workspace(url: str, modality: str) -> Optional[str]:
+    """Download *url* and save it under ``{workspace}/media_save/``.
+    workspace = TERMINAL_CWD env var if set, else os.getcwd().
+    Returns the absolute local path on success, None on any failure.
+    """
+    from pathlib import Path
+    import datetime
+    from urllib.parse import urlparse
+
+    if not url or not url.startswith("http"):
+        return None
+
+    try:
+        workspace = Path(os.getenv("TERMINAL_CWD", os.getcwd())).resolve()
+        save_dir = workspace / "media_save"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Derive extension from URL path; fall back to per-modality default.
+        url_path = urlparse(url).path
+        suffix = Path(url_path).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif",
+                          ".mp4", ".mov", ".avi", ".webm",
+                          ".mp3", ".wav", ".ogg", ".flac"}:
+            suffix = {"image": ".jpg", "video": ".mp4", "audio": ".mp3"}.get(modality, ".bin")
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
+        filename = f"ssy_{modality}_{ts}{suffix}"
+        dest = save_dir / filename
+
+        resp = requests.get(url, timeout=120, stream=True)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+
+        logger.info("Saved %s media to %s", modality, dest)
+        return str(dest)
+
+    except Exception as e:
+        logger.warning("Failed to save media to workspace: %s", e)
+        return None
+
+def _format_ssy_output(raw_json: str, modality: str) -> str:
+    """Reformat a shengsuanyun raw result JSON to match the system tool contracts.
+    image  → {"success": True, "image": local_path}   (mirrors image_generate)
+    video  → {"success": True, "video": local_path}    (mirrors video_generate)
+    audio  → {"success": True, "file_path": local_path,
+               "media_tag": "MEDIA:<local_path>"}       (mirrors text_to_speech)
+    other  → passthrough (no reformat)
+
+    The remote URL is downloaded and saved to {workspace}/media_save/ so the
+    agent and gateways can serve the file locally. Falls back to the remote
+    URL when the download fails.
+
+    Error payloads are returned unchanged.
+    """
+    try:
+        data = json.loads(raw_json)
+    except Exception:
+        return raw_json
+
+    if not data.get("success"):
+        return raw_json
+
+    output_data = data.get("result", {})
+    remote_url = _extract_url_from_output(output_data)
+
+    # Download to workspace/media_save/ and prefer the local path.
+    local_path = _save_media_to_workspace(remote_url, modality) if remote_url else None
+    media = local_path or remote_url
+
+    if modality == "image":
+        return json.dumps({"success": True, "image": media}, ensure_ascii=False)
+    if modality == "video":
+        return json.dumps({"success": True, "video": media}, ensure_ascii=False)
+    if modality == "audio":
+        media_tag = f"MEDIA:{media}" if media else None
+        return json.dumps(
+            {"success": True, "file_path": media, "media_tag": media_tag},
+            ensure_ascii=False,
+        )
+    # text / unknown: keep raw output so the agent still sees the content
+    return raw_json
 
 def _resolve_to_data_uri(path_or_url: str, default_mime: str = "image/jpeg") -> str:
     """Convert a local file path to a base64 data URI; HTTP/data/asset URLs pass through."""
@@ -232,13 +335,11 @@ def _resolve_to_data_uri(path_or_url: str, default_mime: str = "image/jpeg") -> 
     b64 = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{b64}"
 
-
 def _detect_schema_type(schema_obj: Dict[str, Any]) -> str:
     """Return the API input-format type of a model schema.
-
-    "content_array" – uses a ``content[]`` field with typed items (Sora-style).
-    "media_array"   – uses a ``media[]`` field with ``{type, url}`` objects.
-    "direct"        – flat key/value params.
+    "content_array" - uses a ``content[]`` field with typed items (Sora-style).
+    "media_array"   - uses a ``media[]`` field with ``{type, url}`` objects.
+    "direct"        - flat key/value params.
     """
     props = schema_obj.get("properties", {})
     content = props.get("content", {})
@@ -335,7 +436,7 @@ def _build_media_array_payload(args: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _create_handler(mid: str, schema_type: str, capabilities: Dict[str, bool]):
+def _create_handler(mid: str, schema_type: str, capabilities: Dict[str, bool], modality: str):
     """Return an async tool handler bound to *mid* and the given schema metadata.
 
     All parameters are passed by value so each handler has its own independent
@@ -351,19 +452,17 @@ def _create_handler(mid: str, schema_type: str, capabilities: Dict[str, bool]):
             for key, mime in [("image", "image/jpeg"), ("video", "video/mp4"), ("audio", "audio/mpeg")]:
                 if key in processed_args and isinstance(processed_args[key], str):
                     processed_args[key] = _resolve_to_data_uri(processed_args[key], mime)
-        return await shengsuanyun_generation_tool(mid, **processed_args)
+        raw = await shengsuanyun_generation_tool(mid, **processed_args)
+        return _format_ssy_output(raw, modality)
     return handler
 
 def _extract_simple_properties(schema_obj: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
     properties = {}
     required = []
-
     schema_properties = schema_obj.get("properties", {})
     schema_required = schema_obj.get("required", [])
-
     for prop_name, prop_def in schema_properties.items():
         prop_type = prop_def.get("type", "string")
-
         if prop_type == "array":
             if prop_name in ["content", "messages"]:
                 continue
@@ -371,48 +470,34 @@ def _extract_simple_properties(schema_obj: Dict[str, Any]) -> tuple[Dict[str, An
                 item_type = prop_def["items"].get("type")
                 if item_type == "object" and "properties" in prop_def["items"]:
                     continue
-
         if prop_type == "object" and "properties" in prop_def:
             continue
-
         prop_schema = {
             "type": prop_type,
             "description": prop_def.get("title", prop_def.get("description", ""))
         }
-
         if prop_type == "array" and "items" in prop_def:
             prop_schema["items"] = prop_def["items"]
-
         if "enum" in prop_def:
             prop_schema["enum"] = prop_def["enum"]
-
         if "default" in prop_def:
             prop_schema["default"] = prop_def["default"]
-
         if "minimum" in prop_def:
             prop_schema["minimum"] = prop_def["minimum"]
-
         if "maximum" in prop_def:
             prop_schema["maximum"] = prop_def["maximum"]
-
         if "minLength" in prop_def:
             prop_schema["minLength"] = prop_def["minLength"]
-
         if "maxLength" in prop_def:
             prop_schema["maxLength"] = prop_def["maxLength"]
-
         properties[prop_name] = prop_schema
-
         if prop_name in schema_required:
             required.append(prop_name)
-
     return properties, required
 
 def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str], Dict[str, Any]]:
     """Parse a model's input_schema string.
-
     Returns ``(properties, required, schema_meta)`` where *schema_meta* is::
-
         {
             "type":         "content_array" | "media_array" | "direct",
             "capabilities": {"image": bool, "video": bool, "audio": bool},
@@ -425,18 +510,14 @@ def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str
     try:
         if not input_schema_str or not isinstance(input_schema_str, str):
             return {}, [], schema_meta
-
         schema_obj = json.loads(input_schema_str)
         schema_type = _detect_schema_type(schema_obj)
         schema_meta["type"] = schema_type
         schema_meta["variant_summary"] = _anyof_variant_summary(schema_obj)
-
         if schema_type == "content_array":
             return _parse_content_array_schema(schema_obj, schema_meta)
         if schema_type == "media_array":
             return _parse_media_array_schema(schema_obj, schema_meta)
-
-        # ---------- direct schema ----------
         properties: Dict[str, Any] = {}
         required: List[str] = []
 
@@ -465,7 +546,6 @@ def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str
                     required = list(set.union(*all_sub_required))
                 else:
                     required = list(set.intersection(*all_sub_required))
-
         if "content" in schema_obj.get("properties", {}):
             properties["prompt"] = {
                 "type": "string",
@@ -474,9 +554,7 @@ def _parse_input_schema(input_schema_str: str) -> tuple[Dict[str, Any], List[str
             if "content" in schema_obj.get("required", []):
                 if "prompt" not in required:
                     required.append("prompt")
-
         return properties, required, schema_meta
-
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse input_schema: {e}")
         return {}, [], schema_meta
@@ -625,6 +703,7 @@ def register_shengsuanyun_tools():
                     api_name,
                     schema_meta["type"],
                     schema_meta.get("capabilities", {}),
+                    modality,
                 ),
                 check_fn=check_api_requirements,
                 is_async=True,

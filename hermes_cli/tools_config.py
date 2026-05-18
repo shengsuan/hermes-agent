@@ -1120,6 +1120,8 @@ def _get_platform_tools(
                 default_off.remove(platform)
             if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
                 default_off.remove("homeassistant")
+            if "shengsuanyun" in default_off and os.getenv("SHENGSUANYUN_API_KEY"):
+                default_off.remove("shengsuanyun")
             expanded -= default_off
 
             enabled_toolsets |= expanded
@@ -1154,6 +1156,13 @@ def _get_platform_tools(
         )
         if x_search_auto_enabled:
             enabled_toolsets.add("x_search")
+            
+        ssy_auto_enabled = (
+            _toolset_allowed_for_platform("shengsuanyun", platform)
+            and bool(os.getenv("SHENGSUANYUN_API_KEY"))
+        )
+        if ssy_auto_enabled:
+            enabled_toolsets.add("shengsuanyun")
 
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
@@ -1177,6 +1186,9 @@ def _get_platform_tools(
         # strip the entry we just added.
         if x_search_auto_enabled and "x_search" in default_off:
             default_off.remove("x_search")
+        # Symmetric carve-out for shengsuanyun auto-enable.
+        if ssy_auto_enabled and "shengsuanyun" in default_off:
+            default_off.remove("shengsuanyun")
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,

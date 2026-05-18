@@ -54,6 +54,64 @@ if [ "$(id -u)" = "0" ]; then
         chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
     fi
 
+    # --- SSH daemon setup ---
+    # Enabled when SSH_ENABLED=1 (also accepts true/yes, case-insensitive).
+    #
+    # Supported env vars:
+    #   SSH_USER            login username (default: hermes)
+    #   SSH_PASSWORD        password for that user; leave empty to disable
+    #                       password auth (certificate-only)
+    #   SSH_AUTHORIZED_KEYS one or more public keys (newline-separated) to
+    #                       trust for certificate authentication
+    #   SSH_PORT            port sshd listens on (default: 22)
+    case "${SSH_ENABLED:-}" in
+        1|true|TRUE|True|yes|YES|Yes)
+            ssh_user="${SSH_USER:-hermes}"
+            # Create user if it doesn't exist (it may be "hermes" already)
+            if ! id "$ssh_user" &>/dev/null; then
+                useradd -m -s /bin/bash "$ssh_user"
+            fi
+
+            # Password authentication
+            if [ -n "${SSH_PASSWORD:-}" ]; then
+                echo "${ssh_user}:${SSH_PASSWORD}" | chpasswd
+                passwd_auth=yes
+            else
+                passwd_auth=no
+            fi
+
+            # Authorized keys (certificate / pubkey auth)
+            ssh_home="$(eval echo ~"$ssh_user")"
+            mkdir -p "${ssh_home}/.ssh"
+            chmod 700 "${ssh_home}/.ssh"
+            if [ -n "${SSH_AUTHORIZED_KEYS:-}" ]; then
+                printf '%s\n' "${SSH_AUTHORIZED_KEYS}" \
+                    > "${ssh_home}/.ssh/authorized_keys"
+                chmod 600 "${ssh_home}/.ssh/authorized_keys"
+            fi
+            chown -R "${ssh_user}:${ssh_user}" "${ssh_home}/.ssh"
+
+            # Generate host keys if missing (fresh image or tmpfs /etc/ssh)
+            ssh-keygen -A
+
+            # Write a minimal sshd_config
+            cat > /etc/ssh/sshd_config.d/hermes.conf <<EOF
+Port 22
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication ${passwd_auth}
+ChallengeResponseAuthentication no
+UsePAM yes
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+EOF
+
+            echo "Starting sshd on port 22 (background)"
+            /usr/sbin/sshd -e &
+            ;;
+    esac
+
     echo "Dropping root privileges"
     exec gosu hermes "$0" "$@"
 fi

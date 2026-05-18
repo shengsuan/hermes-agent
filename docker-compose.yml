@@ -30,6 +30,7 @@ services:
     # network_mode: host
     ports:
       - "8642:8642" # API server (uncomment API_SERVER_HOST and API_SERVER_KEY below to enable)
+      - "${SSH_PORT:-2222}:22"   # SSH daemon (requires SSH_ENABLED=1)
     volumes:
       - ~/.hermes:/opt/data
     environment:
@@ -40,6 +41,14 @@ services:
       - API_SERVER_HOST=0.0.0.0
       - API_SERVER_KEY=${HERMES_API_SERVER_KEY}
       - SHENGSUANYUN_API_KEY=${SHENGSUANYUN_API_KEY}
+      # SSH daemon — uncomment SSH_ENABLED to allow SSH access into this container.
+      # Requires the host port to be published (add "- 2222:22" to ports above).
+      # Omit SSH_PASSWORD to enforce certificate-only login.
+      - SSH_ENABLED=${SSH_ENABLED:-}
+      - SSH_USER=${SSH_USER:-hermes}
+      - SSH_PASSWORD=${SSH_PASSWORD:-}
+      - SSH_AUTHORIZED_KEYS=${SSH_AUTHORIZED_KEYS:-}
+      - SSH_PORT=${SSH_PORT:-22}
       # Microsoft Teams — uncomment and fill in to enable Teams gateway.
       # Register your bot at https://dev.botframework.com/ to get these values.
       # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
