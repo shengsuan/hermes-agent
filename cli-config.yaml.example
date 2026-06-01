@@ -39,9 +39,9 @@ model:
   #   LM Studio is first-class and uses provider: "lmstudio".
   #   It works with both no-auth and auth-enabled server modes.
   #
-  # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
-  provider: shengsuanyun
-  api_mode: anthropic_messages
+  # Can also be overridden for a single invocation with the --provider flag.
+  provider: "auto"
+  
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://router.shengsuanyun.com/api"
