@@ -10,7 +10,7 @@ class ShengSuanYunProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
-        timeout: float = 20.0,
+        timeout: float = 8.0,
     ) -> list[str] | None:
         if not api_key:
             return None
@@ -22,7 +22,7 @@ class ShengSuanYunProfile(ProviderProfile):
             return [
                 m["api_name"]
                 for m in data.get("data", [])
-                if isinstance(m, dict) and "api_name" in m and "/v1/messages" in m.get("support_apis", [])
+                if isinstance(m, dict) and "api_name" in m and "/v1/messages" in (m.get("support_apis") or [])
             ]
         except Exception as exc:
             logger.debug("fetch_models(shengsuanyun): %s", exc)

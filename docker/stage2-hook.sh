@@ -257,9 +257,37 @@ seed_one() {
         as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
     fi
 }
-seed_one ".env" ".env.example"
-seed_one "config.yaml" "cli-config.yaml.example"
 seed_one "SOUL.md" "docker/SOUL.md"
+
+if [ ! -f "$HERMES_HOME/.env" ]; then
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        as_hermes cp "$INSTALL_DIR/.env" "$HERMES_HOME/.env"
+    else
+        seed_one ".env" ".env.example"
+    fi
+fi
+# Seed config.yaml with ${VAR} substitution from .env.
+# We do NOT source the whole .env because values may contain unquoted spaces
+# (e.g. placeholder text like "你的 API_KEY"), which the shell interprets as a
+# command — causing the subshell to exit non-zero and falling back to raw copy.
+# Instead, extract each variable with awk and pass it inline to envsubst,
+# limiting substitution to only that placeholder.
+if [ ! -f "$HERMES_HOME/config.yaml" ] && [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
+    _llm_model=""
+    if [ -f "$HERMES_HOME/.env" ]; then
+        _llm_model=$(awk '/^HERMES_LLM_MODEL=/{sub(/^HERMES_LLM_MODEL=/,""); print; exit}' \
+            "$HERMES_HOME/.env" 2>/dev/null)
+    fi
+    if [ -n "$_llm_model" ]; then
+        HERMES_LLM_MODEL="$_llm_model" envsubst '${HERMES_LLM_MODEL}' \
+            < "$INSTALL_DIR/cli-config.yaml.example" > "$HERMES_HOME/config.yaml" \
+            || cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+    else
+        cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+    fi
+    chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+fi
 
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was

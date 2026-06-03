@@ -53,7 +53,6 @@ services:
       - SSH_USER=${SSH_USER:-hermes}
       - SSH_PASSWORD=${SSH_PASSWORD:-}
       - SSH_AUTHORIZED_KEYS=${SSH_AUTHORIZED_KEYS:-}
-      - SSH_PORT=${SSH_PORT:-22}
       # Microsoft Teams — uncomment and fill in to enable Teams gateway.
       # Register your bot at https://dev.botframework.com/ to get these values.
       # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
