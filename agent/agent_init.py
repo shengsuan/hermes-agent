@@ -251,6 +251,9 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    _t_init_start = time.monotonic()
+    logger.info("[init-timing] init_agent start: session=%s", session_id)
+
     agent.model = model
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
@@ -324,7 +327,9 @@ def init_agent(
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:
+        _t0 = time.monotonic()
         agent._get_transport()
+        logger.info("[init-timing]   _get_transport warm: %.2fs", time.monotonic() - _t0)
     except Exception:
         pass  # Non-fatal — transport may not exist for all modes yet
 
@@ -514,8 +519,10 @@ def init_agent(
     # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
     # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
     # (which creates a new AIAgent per message) won't duplicate handlers.
+    _t0 = time.monotonic()
     from hermes_logging import setup_logging, setup_verbose_logging
     setup_logging(hermes_home=_ra()._hermes_home)
+    logger.info("[init-timing]   setup_logging: %.2fs", time.monotonic() - _t0)
 
     if agent.verbose_logging:
         setup_verbose_logging()
@@ -882,6 +889,7 @@ def init_agent(
     # when the primary is exhausted (rate-limit, overload, connection
     # failure).  Supports both legacy single-dict ``fallback_model`` and
     # new list ``fallback_providers`` format.
+    logger.info("[init-timing]   client init done: %.2fs api_mode=%s", time.monotonic() - _t_init_start, agent.api_mode)
     if isinstance(fallback_model, list):
         agent._fallback_chain = [
             f for f in fallback_model
@@ -904,11 +912,13 @@ def init_agent(
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
     # Get available tools with filtering
+    _t0 = time.monotonic()
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    logger.info("[init-timing]   get_tool_definitions: %.2fs (%d tools)", time.monotonic() - _t0, len(agent.tools) if agent.tools else 0)
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -1433,6 +1443,7 @@ def init_agent(
         agent.context_compressor = _selected_engine
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
+        _t0 = time.monotonic()
         _plugin_ctx_len = get_model_context_length(
             agent.model,
             base_url=agent.base_url,
@@ -1441,6 +1452,7 @@ def init_agent(
             provider=agent.provider,
             custom_providers=_custom_providers,
         )
+        logger.info("[init-timing]   get_model_context_length (plugin engine): %.2fs", time.monotonic() - _t0)
         agent.context_compressor.update_model(
             model=agent.model,
             context_length=_plugin_ctx_len,
@@ -1452,6 +1464,7 @@ def init_agent(
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
+        _t0 = time.monotonic()
         agent.context_compressor = ContextCompressor(
             model=agent.model,
             threshold_percent=compression_threshold,
@@ -1467,6 +1480,7 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
+        logger.info("[init-timing]   ContextCompressor.__init__: %.2fs ctx=%s", time.monotonic() - _t0, getattr(agent.context_compressor, "context_length", "?"))
     agent.compression_enabled = compression_enabled
 
     # Reject models whose context window is below the minimum required
@@ -1652,6 +1666,7 @@ def init_agent(
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 
+    logger.info("[init-timing] init_agent total: %.2fs session=%s", time.monotonic() - _t_init_start, session_id)
 
 
 __all__ = ["init_agent"]
