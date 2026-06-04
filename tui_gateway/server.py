@@ -26,7 +26,8 @@ from tui_gateway.transport import (
     current_transport,
     reset_transport,
 )
-
+from run_agent import AIAgent
+from hermes_cli.runtime_provider import resolve_runtime_provider
 logger = logging.getLogger(__name__)
 
 _hermes_home = get_hermes_home()
@@ -516,11 +517,26 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         reset_transport(token)
 
 
-def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
+def _wait_agent(session: dict, rid: str, timeout: float = 60.0) -> dict | None:
+    t0 = time.monotonic()
+    key = session.get("session_key", "unknown")
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
+        elapsed = time.monotonic() - t0
+        logger.warning(
+            "[init-timing] _wait_agent TIMED OUT: session=%s elapsed=%.2fs "
+            "(agent_build_started=%s, agent_error=%s)",
+            key, elapsed,
+            session.get("agent_build_started"),
+            session.get("agent_error"),
+        )
         return _err(rid, 5032, "agent initialization timed out")
+    elapsed = time.monotonic() - t0
     err = session.get("agent_error")
+    if err:
+        logger.warning("[init-timing] _wait_agent done with error: session=%s elapsed=%.2fs error=%s", key, elapsed, err)
+    else:
+        logger.info("[init-timing] _wait_agent done OK: session=%s elapsed=%.2fs", key, elapsed)
     return _err(rid, 5032, err) if err else None
 
 
@@ -545,6 +561,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
     key = session["session_key"]
 
     def _build() -> None:
+        t_build_start = time.monotonic()
+        logger.info("[init-timing] _build start: session=%s", key)
         current = _sessions.get(sid)
         if current is None:
             ready.set()
@@ -555,7 +573,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
         try:
             tokens = _set_session_context(key)
             try:
+                t0 = time.monotonic()
                 agent = _make_agent(sid, key)
+                logger.info("[init-timing] _build()._make_agent done: session=%s elapsed=%.2fs", key, time.monotonic() - t0)
             finally:
                 _clear_session_context(tokens)
 
@@ -564,8 +584,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
+                t0 = time.monotonic()
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
                 current["slash_worker"] = worker
+                logger.info("[init-timing] _SlashWorker done: session=%s elapsed=%.2fs", key, time.monotonic() - t0)
             except Exception:
                 pass
 
@@ -575,25 +597,34 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     load_permanent_allowlist,
                 )
 
+                t0 = time.monotonic()
                 register_gateway_notify(
                     key, lambda data: _emit("approval.request", sid, data)
                 )
                 notify_registered = True
                 load_permanent_allowlist()
+                logger.info("[init-timing] approval setup done: session=%s elapsed=%.2fs", key, time.monotonic() - t0)
             except Exception:
                 pass
 
+            t0 = time.monotonic()
             _wire_callbacks(sid)
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
+            logger.info("[init-timing] callbacks+poller done: session=%s elapsed=%.2fs", key, time.monotonic() - t0)
 
+            t0 = time.monotonic()
             info = _session_info(agent, current)
             cfg_warn = _probe_config_health(_load_cfg())
             if cfg_warn:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
+            logger.info("[init-timing] session.info emitted: session=%s elapsed=%.2fs", key, time.monotonic() - t0)
+
+            logger.info("[init-timing] _build total: session=%s elapsed=%.2fs", key, time.monotonic() - t_build_start)
         except Exception as e:
+            logger.exception("[init-timing] _build FAILED: session=%s elapsed=%.2fs error=%s", key, time.monotonic() - t_build_start, e)
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
@@ -624,6 +655,7 @@ def _sess(params, rid):
     s, err = _sess_nowait(params, rid)
     if err:
         return (None, err)
+    logger.info("开始 _start_agent_build(): %s", params)
     _start_agent_build(params.get("session_id") or "", s)
     return (s, _wait_agent(s, rid))
 
@@ -2248,9 +2280,6 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
 
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
-    from run_agent import AIAgent
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell (see tui_gateway/entry.py).  The agent
     # snapshots its tool list once here and never re-reads it, so briefly wait
@@ -2260,33 +2289,45 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     try:
         from tui_gateway.entry import wait_for_mcp_discovery
 
+        t0 = time.monotonic()
         wait_for_mcp_discovery()
+        logger.info("[init-timing]   wait_for_mcp_discovery done: %.2fs", time.monotonic() - t0)
     except Exception:
         pass
 
+    t0 = time.monotonic()
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
+    logger.info("[init-timing]   load_cfg+system_prompt done: %.2fs", time.monotonic() - t0)
+
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
+        t0 = time.monotonic()
         skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
             startup_skills,
             task_id=session_id or key,
         )
+        logger.info("[init-timing]   build_preloaded_skills_prompt done: %.2fs", time.monotonic() - t0)
         if missing_skills:
             raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
+
+    t0 = time.monotonic()
     model, requested_provider = _resolve_startup_runtime()
     runtime = resolve_runtime_provider(
         requested=requested_provider,
         target_model=model or None,
     )
-    return AIAgent(
+    logger.info("[init-timing]   resolve_runtime_provider done: %.2fs model=%s provider=%s", time.monotonic() - t0, model, runtime.get("provider"))
+
+    t0 = time.monotonic()
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
@@ -2315,6 +2356,8 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         **_agent_cbs(sid),
     )
+    logger.info("[init-timing]   AIAgent.__init__ done: %.2fs", time.monotonic() - t0)
+    return agent
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
