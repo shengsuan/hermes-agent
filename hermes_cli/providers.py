@@ -711,6 +711,30 @@ def resolve_provider_full(
     if pdef is not None:
         return pdef
 
+    # 1b. Plugin-registered providers (providers/__init__.py registry).
+    #     Covers bundled model-provider plugins (e.g. shengsuanyun, bigmodel)
+    #     that are not listed in models.dev or HERMES_OVERLAYS.
+    try:
+        from providers import get_provider_profile as _get_pp
+        _pp = _get_pp(canonical) or _get_pp(raw)
+        if _pp is not None:
+            _transport = (
+                "anthropic_messages" if _pp.api_mode == "anthropic_messages"
+                else "codex_responses" if _pp.api_mode == "codex_responses"
+                else "openai_chat"
+            )
+            return ProviderDef(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                transport=_transport,
+                api_key_env_vars=tuple(_pp.env_vars),
+                base_url=_pp.base_url or "",
+                auth_type=_pp.auth_type or "api_key",
+                source="plugin",
+            )
+    except Exception:
+        pass
+
     # 2. User-defined providers from config
     if user_providers:
         # Try canonical name

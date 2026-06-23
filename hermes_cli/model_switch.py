@@ -1734,6 +1734,9 @@ def list_authenticated_providers(
             "models": _cp_top,
             "total_models": _cp_total,
             "source": "canonical",
+            # Explicitly mark as authenticated so _apply_picker_hints does not
+            # treat this as a skeleton row (source="canonical" + no models).
+            "authenticated": True,
         })
         seen_slugs.add(_cp.slug.lower())
         _record_builtin_endpoint(_cp.slug)

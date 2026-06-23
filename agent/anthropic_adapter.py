@@ -569,6 +569,18 @@ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     )
 
 
+def _is_shengsuanyun_endpoint(base_url: str | None) -> bool:
+    """Return True for shengsuanyun's Anthropic-compatible router endpoint.
+
+    Shengsuanyun proxies requests to AWS Bedrock which rejects the
+    fine-grained-tool-streaming beta (causes Bedrock ValidationException:
+    tools.0.custom.eager_input_streaming: Extra inputs are not permitted).
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return "shengsuanyun.com" in normalized.lower()
+
 def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for Azure-hosted Anthropic Messages endpoints.
 
@@ -618,6 +630,12 @@ def _common_betas_for_base_url(
         betas.append(_CONTEXT_1M_BETA)
     if _is_minimax_anthropic_endpoint(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        return [b for b in betas if b not in _stripped]
+    if _is_shengsuanyun_endpoint(base_url):
+        # Shengsuanyun proxies to AWS Bedrock which rejects Anthropic-specific
+        # beta features (eager_input_streaming from fine-grained-tool-streaming,
+        # and interleaved-thinking which also triggers Bedrock validation errors).
+        _stripped = {_TOOL_STREAMING_BETA, "interleaved-thinking-2025-05-14"}
         return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
         return [b for b in betas if b != _CONTEXT_1M_BETA]

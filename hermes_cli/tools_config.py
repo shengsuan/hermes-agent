@@ -1360,6 +1360,17 @@ def _get_platform_tools(
             expanded -= default_off
 
             enabled_toolsets |= expanded
+
+        # Auto-enable shengsuanyun when key is present — mirrors the else-branch
+        # logic below. Without this, the `if composite_tools:` block never fires
+        # for shengsuanyun (its tools are not in _HERMES_CORE_TOOLS), so the
+        # default_off carve-out at line ~1358 has no effect and shengsuanyun stays
+        # disabled even when SHENGSUANYUN_API_KEY is configured.
+        if (
+            _toolset_allowed_for_platform("shengsuanyun", platform)
+            and bool(os.getenv("SHENGSUANYUN_API_KEY"))
+        ):
+            enabled_toolsets.add("shengsuanyun")
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
