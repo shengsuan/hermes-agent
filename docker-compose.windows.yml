@@ -33,6 +33,12 @@ services:
       - HERMES_UID=10000
       - HERMES_GID=10000
       - HERMES_DASHBOARD_HOST=0.0.0.0
+      # The dashboard binds 0.0.0.0, so the auth gate engages (June 2026
+      # hardening). Provide credentials or the dashboard fails closed at boot.
+      #   HERMES_DASHBOARD_BASIC_AUTH_PASSWORD / HERMES_DASHBOARD_BASIC_AUTH_SECRET
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD}
+      - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]

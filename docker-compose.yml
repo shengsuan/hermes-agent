@@ -86,6 +86,17 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      # The dashboard binds 0.0.0.0, so the auth gate is mandatory (June 2026
+      # hardening). Provide username/password credentials via .env or the
+      # host env so this service can start. A stable signing secret keeps
+      # sessions alive across restarts:
+      #   HERMES_DASHBOARD_BASIC_AUTH_PASSWORD / HERMES_DASHBOARD_BASIC_AUTH_SECRET
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-admin}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH}
+      - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_BASIC_AUTH_SECRET}
     # Bound to 127.0.0.1 on the host side via ports mapping above.
-    # For remote access, tunnel via `ssh -L 9019:localhost:9019`.
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--tui", "--insecure"]
+    # For remote access, tunnel via `ssh -L 9119:localhost:9119`.
+    # --insecure is deprecated/no-op (removed); auth is mandatory on
+    # non-loopback binds — use HERMES_DASHBOARD_BASIC_AUTH_* instead.
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--tui"]

@@ -39,14 +39,20 @@ shengsuanyun = ShengSuanYunProfile(
     base_url="https://router.shengsuanyun.com/api/v1",
     auth_type="api_key",
     fallback_models=(
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4.8",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.5",
         "anthropic/claude-opus-4.6",
-        "openai/gpt-5.1",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
         "openai/gpt-5.4",
         "openai/gpt-5.3-chat",
-        "google/gemini-3-flash",
-        "google/gemini-2.5-flash"
+        "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash",
+        "oogle/gemini-3.1-pro-preview",
+        "google/gemini-3-flash"
     ),
     default_aux_model="google/gemini-2.5-pro",
     api_mode="anthropic_messages",
