@@ -213,7 +213,7 @@ def _extract_url_from_output(data: Any) -> Optional[str]:
         return data if data.startswith("http") else None
     if not isinstance(data, dict):
         return None
-    for key in ("url", "video_url", "image_url", "audio_url", "file_url"):
+    for key in ("url", "video_url", "image_url", "audio_url", "file_url", "image_urls", "file_urls", "audio_urls", "video_urls"):
         val = data.get(key)
         if isinstance(val, str) and val:
             return val
