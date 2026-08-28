@@ -13,7 +13,7 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 SHENGSUANYUN_BASE_URL = "https://api.shengsuanyun.com/modelrouter"
-ROUTER_BASE_URL = "https://test-router.shengsuanyun.com/api/v1"
+ROUTER_BASE_URL = "https://router.shengsuanyun.com/api/v1"
 CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 def get_cache_path(name: str):

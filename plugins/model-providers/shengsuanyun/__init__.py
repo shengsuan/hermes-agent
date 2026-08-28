@@ -16,7 +16,7 @@ class ShengSuanYunProfile(ProviderProfile):
         if not api_key:
             return None
         try:
-            req = urllib.request.Request("https://test-router.shengsuanyun.com/api/v1/models")
+            req = urllib.request.Request("https://router.shengsuanyun.com/api/v1/models")
             req.add_header("Accept", "application/json")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
@@ -36,7 +36,7 @@ shengsuanyun = ShengSuanYunProfile(
     description="胜算云 — 多模型云端 API",
     signup_url="https://shengsuanyun.com/",
     env_vars=("SHENGSUANYUN_API_KEY", "SHENGSUANYUN_BASE_URL"),
-    base_url="https://test-router.shengsuanyun.com/api/v1",
+    base_url="https://router.shengsuanyun.com/api/v1",
     auth_type="api_key",
     fallback_models=(
         "anthropic/claude-opus-5",

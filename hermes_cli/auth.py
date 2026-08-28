@@ -383,7 +383,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="shengsuanyun",
         name="胜算云",
         auth_type="api_key",
-        inference_base_url="https://test-router.shengsuanyun.com/api",
+        inference_base_url="https://router.shengsuanyun.com/api",
         api_key_env_vars=("SHENGSUANYUN_API_KEY",),
         base_url_env_var="SHENGSUANYUN_BASE_URL",
     ),
